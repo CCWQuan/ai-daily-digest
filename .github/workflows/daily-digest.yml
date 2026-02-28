@@ -1,0 +1,52 @@
+name: AI Daily Digest Auto Generate
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # UTC 凌晨2点（北京时间10点）
+  workflow_dispatch: # 手动触发
+
+jobs:
+  generate-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Bun 运行时
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: 运行脚本生成日报
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        run: |
+          # 生成带日期的日报文件
+          bun scripts/digest.ts --hours 48 --top-n 15 --lang zh --output ./digest-$(date +%Y%m%d).md
+          # 读取日报内容（用于推送飞书）
+          DIGEST_CONTENT=$(cat ./digest-$(date +%Y%m%d).md)
+          # 将内容写入环境变量（供后续步骤使用）
+          echo "DIGEST_CONTENT<<EOF" >> $GITHUB_ENV
+          echo "$DIGEST_CONTENT" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          # 输出文件名到环境变量
+          echo "DIGEST_FILE=digest-$(date +%Y%m%d).md" >> $GITHUB_ENV
+
+      - name: 推送日报到飞书群
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          DIGEST_CONTENT: ${{ env.DIGEST_CONTENT }}
+          DATE: $(date +%Y-%m-%d)
+        run: |
+          # 构造飞书消息体（支持 Markdown 格式）
+          PAYLOAD=$(jq -n \
+            --arg content "### AI 技术日报（$DATE）\n$DIGEST_CONTENT" \
+            '{msg_type: "markdown", content: {text: $content}}')
+          # 发送 POST 请求到飞书 Webhook
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            $FEISHU_WEBHOOK_URL
